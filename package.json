@@ -1,0 +1,55 @@
+{
+  "name": "secure-prompt-native",
+  "version": "0.0.0",
+  "description": "Prompt for secrets on the terminal straight into guarded memory",
+  "exports": {
+    "./package": "./package.json",
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "binding.c",
+    "binding.js",
+    "src",
+    "CMakeLists.txt",
+    "prebuilds"
+  ],
+  "addon": true,
+  "scripts": {
+    "format": "prettier --write . && lunte --fix",
+    "lint": "prettier --check . && lunte",
+    "test": "npm run test:bare && npm run test:node",
+    "test:bare": "brittle-bare test/*.js",
+    "test:node": "brittle-node test/*.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/holepunchto/secure-prompt-native.git"
+  },
+  "author": "Holepunch",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/holepunchto/secure-prompt-native/issues"
+  },
+  "homepage": "https://github.com/holepunchto/secure-prompt-native#readme",
+  "engines": {
+    "bare": ">=1.4.0"
+  },
+  "dependencies": {
+    "mprotect-native": "^0.0.0",
+    "require-addon": "^1.0.2"
+  },
+  "devDependencies": {
+    "bare-compat-napi": "^1.0.0",
+    "bare-subprocess": "^5.0.0",
+    "brittle": "^3.4.0",
+    "cmake-bare": "^1.1.15",
+    "cmake-fetch": "^1.2.0",
+    "cmake-napi": "^1.0.7",
+    "cmake-npm": "^1.0.2",
+    "lunte": "^1.8.0",
+    "prettier": "^3.4.2",
+    "prettier-config-holepunch": "^2.0.0",
+    "which-runtime": "^1.2.0"
+  }
+}

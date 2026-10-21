@@ -1,0 +1,7 @@
+node_modules/
+build/
+coverage/
+prebuilds/
+sandbox/
+package-lock.json
+sandbox.js
