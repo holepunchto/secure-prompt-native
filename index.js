@@ -21,13 +21,15 @@ module.exports = async function prompt(opts = {}) {
 
   active = true
 
-  let result, len
+  let resolved
 
   try {
-    ;[result, len] = await binding.prompt(message, maxLength)
+    resolved = await binding.prompt(message, maxLength)
   } finally {
     active = false
   }
+
+  const [result, len] = resolved
 
   let memory
 
