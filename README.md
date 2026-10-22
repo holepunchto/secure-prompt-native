@@ -55,4 +55,3 @@ An escape sequence split across two reads by a paste of more than 4096 bytes may
 ## License
 
 Apache-2.0
-
