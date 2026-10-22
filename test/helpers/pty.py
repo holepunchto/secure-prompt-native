@@ -45,7 +45,9 @@ for i, k in enumerate(keys):
 # terminal buffer and never exits
 drain(timeout=30)
 
-if child.poll() is None:
+exited = child.poll() is not None
+
+if not exited:
     child.kill()
 
 child.wait()
@@ -56,5 +58,7 @@ text = out.decode(errors='replace').replace('\r', '')
 print(json.dumps({
     'results': [json.loads(l[7:]) for l in text.splitlines() if l.startswith('RESULT ')],
     'restored': before == after,
+    'exited': exited,
+    'status': child.returncode,
     'output': text
 }))

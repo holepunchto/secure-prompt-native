@@ -48,7 +48,9 @@ Rejects with an error whose `code` is one of:
 
 ## Caveats
 
-The terminal is left in raw mode if the process is killed by a signal while a prompt is active.
+The terminal is left in raw mode if the process is killed by a signal while a prompt is active. Exiting normally (`Bare.exit()`, `process.exit()`) with a prompt active restores the terminal; the promise is then never settled.
+
+An escape sequence split across two reads by a paste of more than 4096 bytes may have its tail typed into the line.
 
 ## License
 

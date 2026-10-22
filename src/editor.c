@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -19,7 +20,7 @@ secure_prompt_editor_init(secure_prompt_editor_t *editor, uint8_t *line, size_t 
 }
 
 secure_prompt_editor_status_t
-secure_prompt_editor_feed(secure_prompt_editor_t *editor, const uint8_t *data, size_t len) {
+secure_prompt_editor_feed(secure_prompt_editor_t *editor, const uint8_t *data, size_t len, bool more) {
   secure_prompt_editor_status_t status = SECURE_PROMPT_EDITOR_MORE;
 
   for (size_t i = 0; i < len && status == SECURE_PROMPT_EDITOR_MORE; i++) {
@@ -75,7 +76,7 @@ secure_prompt_editor_feed(secure_prompt_editor_t *editor, const uint8_t *data, s
   }
 
   // A lone ESC keypress arrives in a read of its own
-  if (editor->esc == SECURE_PROMPT_ESC_START) editor->esc = SECURE_PROMPT_ESC_NONE;
+  if (editor->esc == SECURE_PROMPT_ESC_START && !more) editor->esc = SECURE_PROMPT_ESC_NONE;
 
   return status;
 }

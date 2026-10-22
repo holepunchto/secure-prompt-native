@@ -1,5 +1,5 @@
 const test = require('brittle')
-const { type, supported } = require('./helpers')
+const { type, supported, isLinux } = require('./helpers')
 
 const skip = !supported
 
@@ -78,4 +78,19 @@ test('never echoes the secret, across consecutive prompts', { skip }, (t) => {
   for (const s of secrets) t.absent(output.includes(s), s + ' not echoed')
 
   t.ok(restored)
+})
+
+test('exiting with a prompt active restores the terminal', { skip }, (t) => {
+  const { exited, status, restored } = type([], 'tty', 'exit.js')
+
+  t.ok(exited, 'process exited on its own')
+  t.is(status, 0)
+  t.ok(restored)
+})
+
+test('no descriptor is leaked per prompt', { skip: skip || !isLinux }, (t) => {
+  const { results } = type(['a\r', 'b\r', 'c\r', 'd\r'], 'tty', 'fds.js')
+
+  t.is(results.length, 4)
+  t.is(results[3].fds, results[1].fds)
 })

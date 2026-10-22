@@ -14,10 +14,18 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <poll.h>
 #include <unistd.h>
 #endif
 
 #include "src/editor.h"
+
+// Only the Node-API shim defines this. Node drains promise reactions in a
+// callback scope, which a raw libuv callback is not in, so the Node build
+// settles inside one or the promise waits for the next unrelated callback.
+#ifdef NAPI_VERSION
+#define SECURE_PROMPT_NODE 1
+#endif
 
 #define SECURE_PROMPT_READ_SIZE 4096
 
@@ -27,11 +35,24 @@ typedef struct {
   js_env_t *env;
   js_deferred_t *deferred;
 
+#ifdef SECURE_PROMPT_NODE
+  napi_async_context async;
+#endif
+
 #ifdef _WIN32
   HANDLE output;
 #else
   int fd;
+
+  // libuv reopens the terminal and dup2()s its own descriptor over ours, in
+  // which case it only closes its own
+  bool owns_fd;
 #endif
+
+  // Set once the handle is closing, and while a teardown callback is
+  // registered for the prompt
+  bool closing;
+  bool teardown;
 
   // libuv reads straight into this, so it stays writable while the prompt is
   // active and is wiped after every read
@@ -85,10 +106,26 @@ secure_prompt_native__write(secure_prompt_native_t *prompt, const char *data, si
   DWORD written;
   if (prompt->output != INVALID_HANDLE_VALUE) WriteFile(prompt->output, data, (DWORD) len, &written, NULL);
 #else
+  // Once libuv has the terminal the descriptor is non-blocking, so wait for
+  // it to drain rather than spin, and give up after a while as the output is
+  // only cosmetic
+  int retries = 50;
+
   while (len > 0) {
     ssize_t n = write(prompt->fd, data, len);
-    if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+
+    if (n < 0 && errno == EINTR) continue;
+
+    if (n < 0 && errno == EAGAIN) {
+      if (retries-- == 0) return;
+
+      struct pollfd pfd = {.fd = prompt->fd, .events = POLLOUT};
+      poll(&pfd, 1, 100);
+      continue;
+    }
+
     if (n <= 0) return;
+
     data += n;
     len -= n;
   }
@@ -160,6 +197,16 @@ secure_prompt_native__settle(secure_prompt_native_t *prompt) {
   err = js_open_handle_scope(env, &scope);
   assert(err == 0);
 
+#ifdef SECURE_PROMPT_NODE
+  napi_value resource;
+  err = napi_create_object(env, &resource);
+  assert(err == napi_ok);
+
+  napi_callback_scope callback_scope;
+  err = napi_open_callback_scope(env, resource, prompt->async, &callback_scope);
+  assert(err == napi_ok);
+#endif
+
   js_value_t *error = NULL;
 
   if (prompt->uv_err < 0) {
@@ -216,9 +263,16 @@ secure_prompt_native__settle(secure_prompt_native_t *prompt) {
     assert(err == 0);
   }
 
+#ifdef SECURE_PROMPT_NODE
+  err = napi_close_callback_scope(env, callback_scope);
+  assert(err == napi_ok);
+#endif
+
   err = js_close_handle_scope(env, scope);
   assert(err == 0);
 }
+
+static void secure_prompt_native__on_teardown(void *data);
 
 static void
 secure_prompt_native__on_close(uv_handle_t *handle) {
@@ -229,30 +283,63 @@ secure_prompt_native__on_close(uv_handle_t *handle) {
   // enter raw mode before that happens and then be put back into echo mode.
   if (prompt->deferred) secure_prompt_native__settle(prompt);
 
+  if (prompt->teardown) js_remove_teardown_callback(prompt->env, secure_prompt_native__on_teardown, prompt);
+
+#ifdef SECURE_PROMPT_NODE
+  if (prompt->async) napi_async_destroy(prompt->env, prompt->async);
+#endif
+
   mprotect_free(&prompt->line);
 
 #ifdef _WIN32
   if (prompt->output != INVALID_HANDLE_VALUE) CloseHandle(prompt->output);
+#else
+  if (prompt->owns_fd) close(prompt->fd);
 #endif
 
   free(prompt);
 }
 
 static void
-secure_prompt_native__finish(secure_prompt_native_t *prompt, secure_prompt_editor_status_t status, int uv_err) {
+secure_prompt_native__close(secure_prompt_native_t *prompt) {
   uv_read_stop((uv_stream_t *) &prompt->tty);
 
   uv_tty_set_mode(&prompt->tty, UV_TTY_MODE_NORMAL);
 
-  // Echo is off, so the Enter that ended the line did not move the cursor
-  secure_prompt_native__write(prompt, "\n", 1);
-
   mprotect_free(&prompt->input);
 
+  prompt->closing = true;
+
+  uv_close((uv_handle_t *) &prompt->tty, secure_prompt_native__on_close);
+}
+
+// The environment is going away with the prompt still active. Nothing can be
+// settled any more, but the terminal must be restored and the handle closed,
+// or the runtime blocks draining the loop with the terminal left in raw mode.
+static void
+secure_prompt_native__on_teardown(void *data) {
+  secure_prompt_native_t *prompt = data;
+
+  prompt->deferred = NULL;
+  prompt->teardown = false;
+
+#ifdef SECURE_PROMPT_NODE
+  // Left to the environment, which is being destroyed anyway
+  prompt->async = NULL;
+#endif
+
+  if (!prompt->closing) secure_prompt_native__close(prompt);
+}
+
+static void
+secure_prompt_native__finish(secure_prompt_native_t *prompt, secure_prompt_editor_status_t status, int uv_err) {
   prompt->status = status;
   prompt->uv_err = uv_err;
 
-  uv_close((uv_handle_t *) &prompt->tty, secure_prompt_native__on_close);
+  secure_prompt_native__close(prompt);
+
+  // Echo is off, so the Enter that ended the line did not move the cursor
+  secure_prompt_native__write(prompt, "\n", 1);
 }
 
 static void
@@ -278,7 +365,11 @@ secure_prompt_native__on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t
   secure_prompt_editor_status_t status = SECURE_PROMPT_EDITOR_MORE;
 
   if (err == 0) {
-    status = secure_prompt_editor_feed(&prompt->editor, prompt->input.data, (size_t) nread);
+    // A read that filled the buffer is a paste with more queued, where an
+    // escape sequence may continue in the next read
+    bool more = (size_t) nread == prompt->input.len;
+
+    status = secure_prompt_editor_feed(&prompt->editor, prompt->input.data, (size_t) nread, more);
 
     mprotect_noaccess(&prompt->line);
   }
@@ -367,6 +458,16 @@ secure_prompt_native_prompt(js_env_t *env, js_callback_info_t *info) {
     err = uv_tty_init(loop, &prompt->tty, fd, 1);
   }
 
+#ifndef _WIN32
+  if (err == 0) {
+    uv_os_fd_t stream_fd;
+    err = uv_fileno((uv_handle_t *) &prompt->tty, &stream_fd);
+    assert(err == 0);
+
+    prompt->owns_fd = stream_fd != prompt->fd;
+  }
+#endif
+
   if (err < 0) {
 #ifdef _WIN32
     if (prompt->output != INVALID_HANDLE_VALUE) CloseHandle(prompt->output);
@@ -391,13 +492,25 @@ secure_prompt_native_prompt(js_env_t *env, js_callback_info_t *info) {
   if (err == 0) err = uv_read_start((uv_stream_t *) &prompt->tty, secure_prompt_native__on_alloc, secure_prompt_native__on_read);
 
   if (err < 0) {
-    uv_tty_set_mode(&prompt->tty, UV_TTY_MODE_NORMAL);
-    mprotect_free(&prompt->input);
-    uv_close((uv_handle_t *) &prompt->tty, secure_prompt_native__on_close);
+    secure_prompt_native__close(prompt);
 
     secure_prompt_native__throw(env, err);
     return NULL;
   }
+
+#ifdef SECURE_PROMPT_NODE
+  napi_value name;
+  err = napi_create_string_utf8(env, "secure-prompt-native", NAPI_AUTO_LENGTH, &name);
+  assert(err == napi_ok);
+
+  err = napi_async_init(env, NULL, name, &prompt->async);
+  assert(err == napi_ok);
+#endif
+
+  err = js_add_teardown_callback(env, secure_prompt_native__on_teardown, prompt);
+  assert(err == 0);
+
+  prompt->teardown = true;
 
   js_value_t *promise;
   err = js_create_promise(env, &prompt->deferred, &promise);

@@ -1,6 +1,7 @@
 #ifndef SECURE_PROMPT_EDITOR_H
 #define SECURE_PROMPT_EDITOR_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -28,8 +29,11 @@ secure_prompt_editor_init(secure_prompt_editor_t *editor, uint8_t *line, size_t 
  * Ctrl-D cancel, backspace removes a whole UTF-8 character, and escape
  * sequences and other control characters are ignored. The line must be
  * writable for the duration of the call.
+ *
+ * A read ending in a lone ESC is taken as the Escape key unless `more` says
+ * further input is queued, in which case the sequence continues next read.
  */
 secure_prompt_editor_status_t
-secure_prompt_editor_feed(secure_prompt_editor_t *editor, const uint8_t *data, size_t len);
+secure_prompt_editor_feed(secure_prompt_editor_t *editor, const uint8_t *data, size_t len, bool more);
 
 #endif // SECURE_PROMPT_EDITOR_H
